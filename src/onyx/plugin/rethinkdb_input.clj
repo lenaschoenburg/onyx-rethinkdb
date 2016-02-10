@@ -1,101 +1,108 @@
 (ns onyx.plugin.rethinkdb-input
-  (:require [onyx.peer.function :as function]
-            [onyx.peer.pipeline-extensions :as p-ext]
-            [onyx.static.default-vals :refer [defaults arg-or-default]]
-            [onyx.types :as t]
-            [taoensso.timbre :refer [debug info] :as timbre]))
+  (:require [clojure.core.async :as async]
+            [onyx.peer.function :as function]
+            [onyx.peer.pipeline-extensions :as pipeline]
+            [onyx.static.default-vals :as defaults]
+            [onyx.types :as types]
+            [rethinkdb.query :as r]
+            [taoensso.timbre :as timbre])
+  (:import [java.util UUID]
+           [rethinkdb.net Cursor]))
 
-;; Often you will need some data in your event map for use by the plugin 
-;; or other lifecycle functions. Try to place these in your builder function (pipeline)
-;; first if possible.
-(defn inject-into-eventmap
-  [event lifecycle]
-  (when-not (:rethinkdb/example-datasource event)
-    (throw (ex-info ":rethinkdb/example-datasource not found - add it using a :before-task-start lifecycle"
-                    {:event-map-keys (keys event)})))
+(defn- seq-or-value [rethinkdb-result]
+  (if (instance? Cursor rethinkdb-result)
+    (seq rethinkdb-result)
+    rethinkdb-result))
 
-  (let [pipeline (:onyx.core/pipeline event)] 
-    {:rethinkdb/pending-messages (:pending-messages pipeline) 
-     :rethinkdb/drained? (:drained? pipeline)
-     :rethinkdb/example-datasource (:rethinkdb/example-datasource event)}))
+(defn- start-read-loop! [host port query read-ch]
+  (async/thread
+    (try
+      (with-open [conn (r/connect :host host :port port)]
+        (loop [results (-> query
+                           (r/run conn)
+                           (seq-or-value))]
+          (when-let [result (first results)]
+            (async/>!! read-ch (types/input (UUID/randomUUID) result))
+            (recur (rest results))))
+        (async/>!! read-ch (types/input (UUID/randomUUID) :done)))
+      (catch Exception e
+        (timbre/fatal e)))))
 
-(def reader-calls 
-  {:lifecycle/before-task-start inject-into-eventmap})
+(defn- done? [message]
+  (= :done (:message message)))
 
-(defn input-drained? [pending-messages batch]
-  (and (= 1 (count @pending-messages))
-       (= (count batch) 1)
-       (= (:message (first batch)) :done)))
+(defn- all-done? [messages]
+  (empty? (remove done? messages)))
 
-(defrecord ExampleInput [max-pending batch-size batch-timeout pending-messages drained?]
-  p-ext/Pipeline
-  ;; Write batch can generally be left as is. It simply takes care of
-  ;; Transmitting segments to the next task
-  (write-batch 
-    [this event]
+(defrecord RethinkDbReader [task-id log read-ch
+                            pending-messages drained? acked-result
+                            max-pending batch-size batch-timeout]
+  pipeline/Pipeline
+  (write-batch
+    [_ event]
     (function/write-batch event))
 
-  (read-batch [_ {:keys [rethinkdb/example-datasource] :as event}]
+  (read-batch
+    [_ _]
     (let [pending (count @pending-messages)
           max-segments (min (- max-pending pending) batch-size)
-          ;; Read a batch of up to batch-size from your data-source
-          ;; For data-sources which enable read timeouts, please
-          ;; make sure to pass batch-timeout into the read call
-          batch (mapv (fn [message] 
-                        (t/input (java.util.UUID/randomUUID) message)) 
-                      (take batch-size @example-datasource))
-          _ (swap! example-datasource (partial drop batch-size))]
-      ;; Add the read batch to your pending-messages so they can be 
-      ;; retried later if necessary
+          timeout-ch (async/timeout batch-timeout)
+          batch (->> (range max-segments)
+                     (keep (fn [_] (first (async/alts!! [read-ch timeout-ch] :priority true)))))]
       (doseq [m batch]
-        (swap! pending-messages assoc (:id m) (:message m)))
-      ;; Check if you've seen the :done and all the messages have been consumed
-      ;; If so, set the drained? atom, which will be returned by drained?
-      (when (input-drained? pending-messages batch)
-        (reset! drained? true))   
+        (swap! pending-messages assoc (:id m) m))
+      (let [new-pending (vals @pending-messages)]
+        (when (and (all-done? new-pending)
+                   (all-done? batch)
+                   (or (not (empty? new-pending))
+                       (not (empty? batch))))
+          (reset! drained? true)))
       {:onyx.core/batch batch}))
-  (seal-resource [this event]
-    ;; Nothing is required here, however generally most plugins 
-    ;; have resources (e.g. a connection) to clean up
-    )
 
-  p-ext/PipelineInput
-  (ack-segment [_ _ segment-id]
-    ;; When a message is fully acked you can remove it from pending-messages
-    ;; Generally this can be left as is.
-    (swap! pending-messages dissoc segment-id))
+  pipeline/PipelineInput
+  (ack-segment [_ _ message-id]
+    (swap! pending-messages dissoc message-id))
 
-  (retry-segment 
-    [_ {:keys [rethinkdb/example-datasource] :as event} segment-id]
-    ;; Messages are retried if they are not acked in time
-    ;; or if a message is forcibly retried by flow conditions.
-    ;; Generally this takes place in two steps
-    ;; Take the message out of your pending-messages atom, and put it 
-    ;; back into a datasource or a buffer that are you are reading into
-    (when-let [msg (get @pending-messages segment-id)]
-      (swap! pending-messages dissoc segment-id) 
-      (swap! example-datasource conj msg)))
+  (retry-segment
+    [_ _ message-id]
+    (when-let [msg (get @pending-messages message-id)]
+      (swap! pending-messages dissoc message-id)
+      (async/>!! read-ch (assoc msg :id (UUID/randomUUID)))))
 
   (pending?
-    [_ _ segment-id]
-    ;; Lookup a message in your pending messages map.
-    ;; Generally this can be left as is
-    (get @pending-messages segment-id))
+    [_ _ message-id]
+    (get @pending-messages message-id))
 
-  (drained? 
+  (drained?
     [_ _]
-    ;; Return whether the input has been drained. This is set in the read-batch
     @drained?))
 
-;; Builder function for your plugin. Instantiates a record.
-;; It is highly recommended you inject and pre-calculate frequently used data 
-;; from your task-map here, in order to improve the performance of your plugin
-;; Extending the function below is likely good for most use cases.
-(defn input [event]
-  (let [task-map (:onyx.core/task-map event)
-        max-pending (arg-or-default :onyx/max-pending task-map)
-        batch-size (:onyx/batch-size task-map)
-        batch-timeout (arg-or-default :onyx/batch-timeout task-map)
+(defn inject-reader
+  [{:keys [onyx.core/task-map onyx.core/pipeline]} _]
+  {:pre [(= 1 (:onyx/max-peers task-map))
+         (:rethinkdb/query task-map)]}
+  (let [host (:rethinkdb/host task-map "localhost")
+        port (:rethinkdb/port task-map 28015)
+        query (:rethinkdb/query task-map)
+        read-ch (:read-ch pipeline)]
+    (start-read-loop! host port query read-ch)
+    (timbre/spy :debug "Injecting read channel"
+      {:rethinkdb/read-ch read-ch})))
+
+(defn input [{:keys [onyx.core/log
+                     onyx.core/task-id
+                     onyx.core/task-map]}]
+  (let [max-pending (defaults/arg-or-default :onyx/max-pending task-map)
+        batch-size (defaults/arg-or-default :onyx/batch-size task-map)
+        batch-timeout (defaults/arg-or-default :onyx/batch-timeout task-map)
         pending-messages (atom {})
-        drained? (atom false)] 
-    (->ExampleInput max-pending batch-size batch-timeout pending-messages drained?)))
+        drained? (atom false)
+        acked-result (atom nil)
+        read-ch (async/chan (:rethinkdb/read-buffer task-map 1000))]
+    (->RethinkDbReader
+      task-id log read-ch
+      pending-messages drained? acked-result
+      max-pending batch-size batch-timeout)))
+
+(def reader-calls
+  {:lifecycle/before-task-start inject-reader})
