@@ -1,4 +1,4 @@
-(defproject onyx-rethinkdb "0.8.2.0-SNAPSHOT"
+(defproject onyx-rethinkdb "0.8.9.0-SNAPSHOT"
   :description "Onyx plugin for rethinkdb"
   :url "FIX ME"
   :license {:name "Eclipse Public License"
