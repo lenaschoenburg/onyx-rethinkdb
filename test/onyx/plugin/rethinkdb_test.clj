@@ -60,13 +60,13 @@
 
 
 (defn env-config [id]
-  {:onyx/id               id
+  {:onyx/tenancy-id       id
    :zookeeper/address     "localhost:2188"
    :zookeeper/server?     true
    :zookeeper.server/port 2188})
 
 (defn peer-config [id]
-  {:onyx/id                               id
+  {:onyx/tenancy-id                       id
    :zookeeper/address                     "localhost:2188"
    :onyx.peer/job-scheduler               :onyx.job-scheduler/greedy
    :onyx.messaging.aeron/embedded-driver? true
