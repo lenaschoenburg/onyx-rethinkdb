@@ -1,7 +1,8 @@
-(ns onyx.plugin.rethinkdb-input
+(ns onyx.plugin.rethinkdb
   (:require [clojure.core.async :as async]
-            [onyx.peer.function :as function]
-            [onyx.peer.pipeline-extensions :as pipeline]
+            [onyx.peer
+             [function :as function]
+             [pipeline-extensions :as pipeline]]
             [onyx.static.default-vals :as defaults]
             [onyx.types :as types]
             [rethinkdb.query :as r]
@@ -9,6 +10,8 @@
   (:import [java.util UUID]
            [rethinkdb.net Cursor]))
 
+
+;;; Reader
 (defn- seq-or-value [rethinkdb-result]
   (if (instance? Cursor rethinkdb-result)
     (seq rethinkdb-result)
@@ -87,7 +90,7 @@
         read-ch (:read-ch pipeline)]
     (start-read-loop! host port query read-ch)
     (timbre/spy :debug "Injecting read channel"
-      {:rethinkdb/read-ch read-ch})))
+                {:rethinkdb/read-ch read-ch})))
 
 (defn input [{:keys [onyx.core/log
                      onyx.core/task-id
@@ -106,3 +109,39 @@
 
 (def reader-calls
   {:lifecycle/before-task-start inject-reader})
+
+;;; Writer
+
+(defrecord RethinkDbWriter [table get-in-keys]
+  pipeline/Pipeline
+  (read-batch
+    [_ event]
+    (function/read-batch event))
+
+  (write-batch
+    [_ {:keys [onyx.core/results rethinkdb/connection]}]
+    (let [documents (into [] (comp (mapcat :leaves)
+                                   (map :message)
+                                   (map #(get-in % get-in-keys)))
+                          (:tree results))]
+      (-> table
+          (r/insert documents)
+          (r/run connection)))
+    {})
+
+  (seal-resource
+    [_ _]
+    {}))
+
+(defn output [{:keys [onyx.core/task-map]}]
+  (let [table (:rethinkdb/table task-map)
+        get-in-keys (:rethinkdb/get-in task-map)]
+    (->RethinkDbWriter table get-in-keys)))
+
+(defn inject-writer [{:keys [onyx.core/task-map]} _]
+  (let [host (:rethinkdb/host task-map "localhost")
+        port (:rethinkdb/port task-map 28015)]
+    {:rethinkdb/connection (r/connect :host host :port port)}))
+
+(def writer-calls
+  {:lifecycle/before-task-start inject-writer})

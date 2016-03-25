@@ -1,9 +1,10 @@
 (ns onyx.plugin.rethinkdb-test
   (:require [clojure.test :refer :all]
-            [onyx.plugin.rethinkdb-output]
-            [onyx.plugin.rethinkdb-input]
+            [onyx.tasks.rethinkdb :as rethinkdb]
+            [onyx.plugin.rethinkdb]
             [onyx.test-helper :as test-helper]
             [onyx.api :as onyx]
+            [onyx.job :as job]
             [taoensso.timbre :as timbre]
             [rethinkdb.query :as r])
   (:import [java.util UUID]))
@@ -30,7 +31,6 @@
         (r/table "test_out")
         (r/run conn)
         (vec))))
-
 
 (defn bootstrap-db []
   (with-open [conn (r/connect :host test-host :port test-port)]
@@ -75,54 +75,32 @@
    :onyx.messaging/peer-port              40200
    :onyx.messaging/bind-addr              "localhost"})
 
-(def catalog
-  [{:onyx/name       :load-documents
-    :onyx/plugin     :onyx.plugin.rethinkdb-input/input
-    :onyx/medium     :rethinkdb
-    :onyx/max-peers  1
-    :onyx/type       :input
-    :onyx/batch-size 100
-    :onyx/bulk?      true
-    :rethinkdb/host  test-host
-    :rethinkdb/port  test-port
-    :rethinkdb/query (-> (r/db test-db)
-                         (r/table "test_in"))
-    :onyx/doc        "Read documents from RethinkDB server"}
-
-   {:onyx/name       :save-documents
-    :onyx/plugin     :onyx.plugin.rethinkdb-output/output
-    :onyx/type       :output
-    :onyx/batch-size 100
-    :onyx/bulk?      true
-    :onyx/medium     :rethinkdb
-    :onyx/max-peers  1
-    :rethinkdb/host  test-host
-    :rethinkdb/port  test-port
-    :rethinkdb/table (-> (r/db test-db)
-                         (r/table "test_out"))
-    :onyx/doc        "Writes documents to a RethinkDB server"}])
-
-(def workflow [[:load-documents :save-documents]])
-
-(def lifecycles
-  [{:lifecycle/task  :load-documents
-    :lifecycle/calls :onyx.plugin.rethinkdb-input/reader-calls}
-   {:lifecycle/task  :save-documents
-    :lifecycle/calls :onyx.plugin.rethinkdb-output/writer-calls}])
+(def base-job
+  {:workflow        [[:load-documents :save-documents]]
+   :task-scheduler  :onyx.task-scheduler/balanced
+   :catalog         []
+   :lifecycles      []
+   :windows         []
+   :triggers        []
+   :flow-conditions []})
 
 (defn submit-and-wait
-  ([peer-config catalog lc]
+  ([peer-config]
    (timbre/debug "Submitting job")
-   (let [job-info (onyx/submit-job
-                    peer-config
-                    {:catalog        catalog
-                     :workflow       workflow
-                     :lifecycles     lc
-                     :task-scheduler :onyx.task-scheduler/balanced})]
-     (timbre/debug "Submitted Job " (:job-id job-info))
-     (onyx/await-job-completion peer-config (:job-id job-info))
-     (timbre/debug "Job completed")
-     job-info)))
+   (->> (-> base-job
+            (job/add-task (rethinkdb/input
+                            :load-documents
+                            {:onyx/batch-size 10
+                             :rethinkdb/query (-> (r/db test-db)
+                                                  (r/table "test_in"))}))
+            (job/add-task (rethinkdb/output
+                            :save-documents
+                            {:onyx/batch-size 10
+                             :rethinkdb/table (-> (r/db test-db)
+                                                  (r/table "test_out"))})))
+        (onyx/submit-job peer-config)
+        :job-id
+        (onyx/await-job-completion peer-config))))
 
 (deftest test-run
   (let [id (UUID/randomUUID)
@@ -130,6 +108,5 @@
         peer-config (peer-config id)]
     (timbre/with-merged-config {:appenders {:println {:min-level :trace}}}
       (test-helper/with-test-env [test-env [3 env-config peer-config]]
-        (submit-and-wait peer-config catalog lifecycles)
-        (is (= (load-in)
-               (load-out)))))))
+        (submit-and-wait peer-config)
+        (is (= (load-in) (load-out)))))))
