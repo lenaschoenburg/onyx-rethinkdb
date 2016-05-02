@@ -21,9 +21,7 @@
            s/Any            s/Any}))
 
 (s/defschema RethinkDbOutputTaskMap
-  (s/both RethinkDbTaskConfig
-          {:rethinkdb/table {s/Any s/Any}
-           s/Any            s/Any}))
+  RethinkDbTaskConfig)
 
 (s/defschema RethinkDbInputTask
   {:task-map   RethinkDbInputTaskMap

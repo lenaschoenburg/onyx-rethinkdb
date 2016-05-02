@@ -47,11 +47,11 @@
 
   (read-batch
     [_ _]
-    (let [pending (count @pending-messages)
+    (let [pending      (count @pending-messages)
           max-segments (min (- max-pending pending) batch-size)
-          timeout-ch (async/timeout batch-timeout)
-          batch (->> (range max-segments)
-                     (keep (fn [_] (first (async/alts!! [read-ch timeout-ch] :priority true)))))]
+          timeout-ch   (async/timeout batch-timeout)
+          batch        (->> (range max-segments)
+                            (keep (fn [_] (first (async/alts!! [read-ch timeout-ch] :priority true)))))]
       (doseq [m batch]
         (swap! pending-messages assoc (:id m) m))
       (let [new-pending (vals @pending-messages)]
@@ -112,7 +112,7 @@
 
 ;;; Writer
 
-(defrecord RethinkDbWriter [table get-in-keys]
+(defrecord RethinkDbWriter []
   pipeline/Pipeline
   (read-batch
     [_ event]
@@ -120,23 +120,22 @@
 
   (write-batch
     [_ {:keys [onyx.core/results rethinkdb/connection]}]
-    (let [documents (into [] (comp (mapcat :leaves)
-                                   (map :message)
-                                   (map #(get-in % get-in-keys)))
-                          (:tree results))]
-      (-> table
-          (r/insert documents)
-          (r/run connection)))
+    (transduce
+      (comp (mapcat :leaves)
+            (map :message))
+      (completing
+        (fn [_ q]
+          (r/run q connection)))
+      nil
+      (:tree results))
     {})
 
   (seal-resource
     [_ _]
     {}))
 
-(defn output [{:keys [onyx.core/task-map]}]
-  (let [table (:rethinkdb/table task-map)
-        get-in-keys (:rethinkdb/get-in task-map)]
-    (->RethinkDbWriter table get-in-keys)))
+(defn output [_]
+  (->RethinkDbWriter))
 
 (defn inject-writer [{:keys [onyx.core/task-map]} _]
   (let [host (:rethinkdb/host task-map "localhost")

@@ -76,13 +76,26 @@
    :onyx.messaging/bind-addr              "localhost"})
 
 (def base-job
-  {:workflow        [[:load-documents :save-documents]]
+  {:workflow        [[:load-documents :write-query]
+                     [:write-query :save-documents]]
    :task-scheduler  :onyx.task-scheduler/balanced
    :catalog         []
    :lifecycles      []
    :windows         []
    :triggers        []
    :flow-conditions []})
+
+(defn write-query [segment]
+  (-> (r/db test-db)
+      (r/table "test_out")
+      (r/insert segment)))
+
+(def write-query-task
+  {:onyx/name       :write-query
+   :oynx/doc        "Takes a sequence of analyses and coerces them"
+   :onyx/type       :function
+   :onyx/fn         ::write-query
+   :onyx/batch-size 10})
 
 (defn submit-and-wait
   ([peer-config]
@@ -95,9 +108,8 @@
                                                   (r/table "test_in"))}))
             (job/add-task (rethinkdb/output
                             :save-documents
-                            {:onyx/batch-size 10
-                             :rethinkdb/table (-> (r/db test-db)
-                                                  (r/table "test_out"))})))
+                            {:onyx/batch-size 10}))
+            (update :catalog conj write-query-task))
         (onyx/submit-job peer-config)
         :job-id
         (onyx/await-job-completion peer-config))))
@@ -106,7 +118,7 @@
   (let [id (UUID/randomUUID)
         env-config (env-config id)
         peer-config (peer-config id)]
-    (timbre/with-merged-config {:appenders {:println {:min-level :trace}}}
+    (timbre/with-merged-config {:appenders {:println {:min-level :error}}}
       (test-helper/with-test-env [test-env [3 env-config peer-config]]
         (submit-and-wait peer-config)
         (is (= (load-in) (load-out)))))))
