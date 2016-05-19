@@ -9,28 +9,33 @@
             [rethinkdb.query :as r])
   (:import [java.util UUID]))
 
+(timbre/handle-uncaught-jvm-exceptions!)
+
 (def test-host "localhost")
 (def test-port 28015)
 (def test-db "onyx_rethinkdb_test_db")
 
 (def test-documents
-  [{:a 1}
-   {:b 2}
-   {:c 3}])
+  (let [prog (volatile! 0)]
+    (into []
+          (repeatedly
+            5000
+            (fn []
+              {:val (vswap! prog inc)})))))
 
 (defn load-in []
   (with-open [conn (r/connect :host test-host :port test-port)]
     (-> (r/db test-db)
-        (r/table "test_in")
-        (r/run conn)
-        (vec))))
+        (r/table "test_in" {"read-mode" "majority"})
+        (r/count)
+        (r/run conn))))
 
 (defn load-out []
   (with-open [conn (r/connect :host test-host :port test-port)]
     (-> (r/db test-db)
-        (r/table "test_out")
-        (r/run conn)
-        (vec))))
+        (r/table "test_out" {"read-mode" "majority"})
+        (r/count)
+        (r/run conn))))
 
 (defn bootstrap-db []
   (with-open [conn (r/connect :host test-host :port test-port)]
@@ -55,6 +60,7 @@
 (use-fixtures :each
   (fn [test-fn]
     (bootstrap-db)
+    (Thread/sleep 20000)
     (test-fn)
     (drop-db)))
 
@@ -95,30 +101,32 @@
    :oynx/doc        "Takes a sequence of analyses and coerces them"
    :onyx/type       :function
    :onyx/fn         ::write-query
+   :onyx/bulk?      false
    :onyx/batch-size 10})
 
+(def job
+  (-> base-job
+      (job/add-task (rethinkdb/input
+                      :load-documents
+                      {:onyx/batch-size 1
+                       :rethinkdb/query (-> (r/db test-db)
+                                            (r/table "test_in" {"read-mode" "majority"}))}))
+      (job/add-task (rethinkdb/output
+                      :save-documents
+                      {:onyx/batch-size 1}))
+      (update :catalog conj write-query-task)))
+
 (defn submit-and-wait
-  ([peer-config]
-   (timbre/debug "Submitting job")
-   (->> (-> base-job
-            (job/add-task (rethinkdb/input
-                            :load-documents
-                            {:onyx/batch-size 10
-                             :rethinkdb/query (-> (r/db test-db)
-                                                  (r/table "test_in"))}))
-            (job/add-task (rethinkdb/output
-                            :save-documents
-                            {:onyx/batch-size 10}))
-            (update :catalog conj write-query-task))
-        (onyx/submit-job peer-config)
-        :job-id
-        (onyx/await-job-completion peer-config))))
+  [peer-config]
+  (->> job
+       (onyx/submit-job peer-config)
+       :job-id
+       (onyx/await-job-completion peer-config)))
 
 (deftest test-run
   (let [id (UUID/randomUUID)
         env-config (env-config id)
         peer-config (peer-config id)]
-    (timbre/with-merged-config {:appenders {:println {:min-level :error}}}
-      (test-helper/with-test-env [test-env [3 env-config peer-config]]
-        (submit-and-wait peer-config)
-        (is (= (load-in) (load-out)))))))
+    (test-helper/with-test-env [test-env [8 env-config peer-config]]
+      (submit-and-wait peer-config)
+      (is (= (load-in) (load-out))))))

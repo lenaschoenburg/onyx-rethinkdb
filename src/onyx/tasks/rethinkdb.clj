@@ -32,24 +32,24 @@
    :lifecycles [os/Lifecycle]})
 
 (s/defn ^:always-validate input :- {:task RethinkDbInputTask :schema s/Any}
-  ([task-name :- s/Keyword opts :- {s/Any s/Any}]
-    {:task   {:task-map   (merge opts
-                                 {:onyx/name      task-name
-                                  :onyx/type      :input
-                                  :onyx/medium    :rethinkdb
-                                  :onyx/plugin    :onyx.plugin.rethinkdb/input
-                                  :onyx/max-peers 1})
-              :lifecycles [{:lifecycle/task  task-name
-                            :lifecycle/calls :onyx.plugin.rethinkdb/reader-calls}]}
-     :schema RethinkDbInputTask}))
+  [task-name :- s/Keyword opts :- {s/Any s/Any}]
+  {:task   {:task-map   (merge opts
+                               {:onyx/name      task-name
+                                :onyx/type      :input
+                                :onyx/medium    :rethinkdb
+                                :onyx/plugin    :onyx.plugin.rethinkdb/input
+                                :onyx/max-peers 1})
+            :lifecycles [{:lifecycle/task  task-name
+                          :lifecycle/calls :onyx.plugin.rethinkdb/reader-calls}]}
+   :schema RethinkDbInputTask})
 
 (s/defn ^:always-validate output :- {:task RethinkDbOutputTask :schema s/Any}
-  ([task-name :- s/Keyword opts :- {s/Any s/Any}]
-    {:task   {:task-map   (merge opts
-                                 {:onyx/name   task-name
-                                  :onyx/type   :output
-                                  :onyx/medium :rethinkdb
-                                  :onyx/plugin :onyx.plugin.rethinkdb/output})
-              :lifecycles [{:lifecycle/task  task-name
-                            :lifecycle/calls :onyx.plugin.rethinkdb/writer-calls}]}
-     :schema RethinkDbOutputTask}))
+  [task-name :- s/Keyword opts :- {s/Any s/Any}]
+  {:task   {:task-map   (merge opts
+                               {:onyx/name   task-name
+                                :onyx/type   :output
+                                :onyx/medium :rethinkdb
+                                :onyx/plugin :onyx.plugin.rethinkdb/output})
+            :lifecycles [{:lifecycle/task  task-name
+                          :lifecycle/calls :onyx.plugin.rethinkdb/writer-calls}]}
+   :schema RethinkDbOutputTask})
