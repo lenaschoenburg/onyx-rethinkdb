@@ -8,7 +8,8 @@
             [rethinkdb.query :as r]
             [taoensso.timbre :as timbre])
   (:import [java.util UUID]
-           [rethinkdb.net Cursor]))
+           [rethinkdb.net Cursor]
+           [onyx.types Leaf]))
 
 ;;; Reader
 
@@ -36,7 +37,10 @@
       ([res]
        (rf (rf res (types/input (UUID/randomUUID) :done))))
       ([res in]
-       (rf res (types/input (UUID/randomUUID) in))))))
+       (rf res
+           (if (instance? Leaf in)
+             (assoc in :id (UUID/randomUUID))
+             (types/input (UUID/randomUUID) in)))))))
 
 (defn- done? [message]
   (= :done (:message message)))
@@ -77,7 +81,7 @@
     [_ _ message-id]
     (when-let [msg (get @pending-messages message-id)]
       (swap! pending-messages dissoc message-id)
-      (async/>!! read-ch (assoc msg :id (UUID/randomUUID)))))
+      (async/>!! read-ch msg)))
 
   (pending?
     [_ _ message-id]
