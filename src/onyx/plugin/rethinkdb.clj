@@ -7,21 +7,26 @@
             [onyx.types :as types]
             [rethinkdb.query :as r]
             [taoensso.timbre :as timbre])
-  (:import [java.util UUID]))
+  (:import [java.util UUID]
+           [rethinkdb.net Cursor]))
 
 ;;; Reader
 
 (defn- start-read-loop! [host port query read-ch]
   (async/thread
     (with-open [conn (r/connect :host host :port port)]
-      (loop [result (async/<!! (r/run query conn {:async? true}))]
-        (cond
-          (nil? result) (async/close! read-ch)
-          (instance? Throwable result) (async/>!! read-ch (ex-info "Uncaught exception in rethinkdb input query" {:exception result}))
-          :else (if-let [v (first result)]
-                 (when (async/>!! read-ch v)
-                   (recur (rest result)))
-                 (async/close! read-ch)))))))
+      (let [results-ch (r/run query conn {:async? true})]
+        (loop [result (async/<!! results-ch)]
+          (cond
+            (nil? result) (async/close! read-ch)
+            (instance? Throwable result) (async/>!! read-ch (ex-info "Uncaught exception in rethinkdb input query" {:exception result}))
+            (or (sequential? result)
+                (instance? Cursor result)) (if-let [v (first result)]
+                                             (when (async/>!! read-ch v)
+                                               (recur (rest result)))
+                                             (async/close! read-ch))
+            :else (when (async/>!! read-ch result)
+                    (recur (async/<!! results-ch)))))))))
 
 (def transform-query-result
   (fn [rf]
@@ -115,7 +120,7 @@
 
 ;;; Writer
 
-(defrecord RethinkDbWriter [deb]
+(defrecord RethinkDbWriter []
   pipeline/Pipeline
   (read-batch
     [_ event]
@@ -140,7 +145,7 @@
     {}))
 
 (defn output [_]
-  (->RethinkDbWriter (atom 0)))
+  (->RethinkDbWriter))
 
 (defn inject-writer [{:keys [onyx.core/task-map]} _]
   (let [host (:rethinkdb/host task-map "localhost")
