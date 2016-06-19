@@ -6,32 +6,28 @@
   (s/constrained s/Int #(<= 1 % 65535)))
 
 (s/defschema RethinkDbTaskConfig
-  (s/both os/TaskMap
-          {(s/optional-key :rethinkdb/host)            s/Str
-           (s/optional-key :rethinkdb/port)            Port
-           (s/optional-key :rethinkdb/db)              s/Str
-           (s/optional-key :rethinkdb/token)           s/Int
-           (s/optional-key :rethinkdb/auth-key)        s/Str
-           (s/optional-key :rethinkdb/connect-timeout) s/Str
-           s/Any                                       s/Any}))
+  {(s/optional-key :rethinkdb/host)            s/Str
+   (s/optional-key :rethinkdb/port)            Port
+   (s/optional-key :rethinkdb/db)              s/Str
+   (s/optional-key :rethinkdb/token)           s/Int
+   (s/optional-key :rethinkdb/auth-key)        s/Str
+   (s/optional-key :rethinkdb/connect-timeout) s/Str
+   (os/restricted-ns :rethinkdb)               s/Any})
 
 (s/defschema RethinkDbInputTaskMap
-  (s/both RethinkDbTaskConfig
-          {:rethinkdb/query {s/Any s/Any}
-           s/Any            s/Any}))
+  (assoc RethinkDbTaskConfig
+    :rethinkdb/query {s/Any s/Any}))
 
 (s/defschema RethinkDbOutputTaskMap
   RethinkDbTaskConfig)
 
 (s/defschema RethinkDbInputTask
-  {:task-map   RethinkDbInputTaskMap
-   :lifecycles [os/Lifecycle]})
+  {:task-map   RethinkDbInputTaskMap})
 
 (s/defschema RethinkDbOutputTask
-  {:task-map   RethinkDbOutputTaskMap
-   :lifecycles [os/Lifecycle]})
+  {:task-map   RethinkDbOutputTaskMap})
 
-(s/defn ^:always-validate input :- {:task RethinkDbInputTask :schema s/Any}
+(s/defn ^:always-validate input :- {:task s/Any :schema s/Any}
   [task-name :- s/Keyword opts :- {s/Any s/Any}]
   {:task   {:task-map   (merge opts
                                {:onyx/name      task-name
@@ -43,7 +39,7 @@
                           :lifecycle/calls :onyx.plugin.rethinkdb/reader-calls}]}
    :schema RethinkDbInputTask})
 
-(s/defn ^:always-validate output :- {:task RethinkDbOutputTask :schema s/Any}
+(s/defn ^:always-validate output :- {:task s/Any :schema s/Any}
   [task-name :- s/Keyword opts :- {s/Any s/Any}]
   {:task   {:task-map   (merge opts
                                {:onyx/name   task-name

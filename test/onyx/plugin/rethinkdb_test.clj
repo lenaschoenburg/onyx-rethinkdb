@@ -19,7 +19,7 @@
   (let [prog (volatile! 0)]
     (into []
           (repeatedly
-            5000
+            10000
             (fn []
               {:val (vswap! prog inc)})))))
 
@@ -104,8 +104,7 @@
       (job/add-task (rethinkdb/output
                       :save-documents
                       {:onyx/batch-size 30
-                       :onyx/fn ::write-query
-                       :onyx/max-peers 1}))))
+                       :onyx/fn ::write-query}))))
 
 (defn submit-and-wait
   [peer-config]
