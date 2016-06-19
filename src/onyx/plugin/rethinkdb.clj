@@ -95,25 +95,25 @@
   [{:keys [onyx.core/task-map onyx.core/pipeline]} _]
   {:pre [(= 1 (:onyx/max-peers task-map))
          (:rethinkdb/query task-map)]}
-  (let [host (:rethinkdb/host task-map "localhost")
-        port (:rethinkdb/port task-map 28015)
-        query (:rethinkdb/query task-map)
+  (let [host    (:rethinkdb/host task-map "localhost")
+        port    (:rethinkdb/port task-map 28015)
+        query   (:rethinkdb/query task-map)
         read-ch (:read-ch pipeline)]
     (start-read-loop! host port query read-ch)
     (timbre/spy :debug "Injecting read channel"
-      {:rethinkdb/read-ch read-ch})))
+                {:rethinkdb/read-ch read-ch})))
 
 (defn input [{:keys [onyx.core/log
                      onyx.core/task-id
                      onyx.core/task-map]}]
-  (let [max-pending (defaults/arg-or-default :onyx/max-pending task-map)
-        batch-size (defaults/arg-or-default :onyx/batch-size task-map)
-        batch-timeout (defaults/arg-or-default :onyx/batch-timeout task-map)
-        read-buffer (:rethinkdb/read-buffer task-map 1000)
+  (let [max-pending      (defaults/arg-or-default :onyx/max-pending task-map)
+        batch-size       (defaults/arg-or-default :onyx/batch-size task-map)
+        batch-timeout    (defaults/arg-or-default :onyx/batch-timeout task-map)
+        read-buffer      (:rethinkdb/read-buffer task-map 1000)
         pending-messages (atom {})
-        drained? (atom false)
-        acked-result (atom nil)
-        read-ch (async/chan read-buffer transform-query-result)]
+        drained?         (atom false)
+        acked-result     (atom nil)
+        read-ch          (async/chan read-buffer transform-query-result)]
     (->RethinkDbReader
       task-id log read-ch
       pending-messages drained? acked-result

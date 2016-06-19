@@ -60,7 +60,6 @@
 (use-fixtures :each
   (fn [test-fn]
     (bootstrap-db)
-    (Thread/sleep 20000)
     (test-fn)
     (drop-db)))
 
@@ -82,8 +81,7 @@
    :onyx.messaging/bind-addr              "localhost"})
 
 (def base-job
-  {:workflow        [[:load-documents :write-query]
-                     [:write-query :save-documents]]
+  {:workflow        [[:load-documents :save-documents]]
    :task-scheduler  :onyx.task-scheduler/balanced
    :catalog         []
    :lifecycles      []
@@ -96,14 +94,6 @@
       (r/table "test_out")
       (r/insert segment)))
 
-(def write-query-task
-  {:onyx/name       :write-query
-   :oynx/doc        "Takes a sequence of analyses and coerces them"
-   :onyx/type       :function
-   :onyx/fn         ::write-query
-   :onyx/bulk?      false
-   :onyx/batch-size 10})
-
 (def job
   (-> base-job
       (job/add-task (rethinkdb/input
@@ -113,8 +103,9 @@
                                             (r/table "test_in" {"read-mode" "majority"}))}))
       (job/add-task (rethinkdb/output
                       :save-documents
-                      {:onyx/batch-size 1}))
-      (update :catalog conj write-query-task)))
+                      {:onyx/batch-size 30
+                       :onyx/fn ::write-query
+                       :onyx/max-peers 1}))))
 
 (defn submit-and-wait
   [peer-config]
