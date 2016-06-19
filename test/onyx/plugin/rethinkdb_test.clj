@@ -58,10 +58,10 @@
         (r/run conn))))
 
 (use-fixtures :each
-  (fn [test-fn]
-    (bootstrap-db)
-    (test-fn)
-    (drop-db)))
+              (fn [test-fn]
+                (bootstrap-db)
+                (test-fn)
+                (drop-db)))
 
 
 (defn env-config [id]
@@ -98,13 +98,14 @@
   (-> base-job
       (job/add-task (rethinkdb/input
                       :load-documents
-                      {:onyx/batch-size 1
-                       :rethinkdb/query (-> (r/db test-db)
-                                            (r/table "test_in" {"read-mode" "majority"}))}))
+                      {:onyx/batch-size       30
+                       :rethinkdb/read-buffer 1000
+                       :rethinkdb/query       (-> (r/db test-db)
+                                                  (r/table "test_in" {"read-mode" "majority"}))}))
       (job/add-task (rethinkdb/output
                       :save-documents
                       {:onyx/batch-size 30
-                       :onyx/fn ::write-query}))))
+                       :onyx/fn         ::write-query}))))
 
 (defn submit-and-wait
   [peer-config]
@@ -114,9 +115,11 @@
        (onyx/await-job-completion peer-config)))
 
 (deftest test-run
-  (let [id (UUID/randomUUID)
-        env-config (env-config id)
+  (let [id          (UUID/randomUUID)
+        env-config  (env-config id)
         peer-config (peer-config id)]
     (test-helper/with-test-env [test-env [8 env-config peer-config]]
+      (timbre/merge-config! {:level     :debug
+                             :appenders {:println {:min-level :trace}}})
       (submit-and-wait peer-config)
       (is (= (load-in) (load-out))))))

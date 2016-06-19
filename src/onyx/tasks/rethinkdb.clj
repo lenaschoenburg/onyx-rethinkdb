@@ -12,6 +12,7 @@
    (s/optional-key :rethinkdb/token)           s/Int
    (s/optional-key :rethinkdb/auth-key)        s/Str
    (s/optional-key :rethinkdb/connect-timeout) s/Str
+   (s/optional-key :rethinkdb/read-buffer)     s/Int
    (os/restricted-ns :rethinkdb)               s/Any})
 
 (s/defschema RethinkDbInputTaskMap
@@ -22,10 +23,10 @@
   RethinkDbTaskConfig)
 
 (s/defschema RethinkDbInputTask
-  {:task-map   RethinkDbInputTaskMap})
+  {:task-map RethinkDbInputTaskMap})
 
 (s/defschema RethinkDbOutputTask
-  {:task-map   RethinkDbOutputTaskMap})
+  {:task-map RethinkDbOutputTaskMap})
 
 (s/defn ^:always-validate input :- {:task s/Any :schema s/Any}
   [task-name :- s/Keyword opts :- {s/Any s/Any}]

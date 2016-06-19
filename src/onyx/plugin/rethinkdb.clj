@@ -13,14 +13,17 @@
 
 ;;; Reader
 
-(defn- start-read-loop! [host port query read-ch]
+(defn- start-read-loop! [log-prefix host port query read-ch]
   (async/thread
     (with-open [conn (r/connect :host host :port port)]
       (let [results-ch (r/run query conn {:async? true})]
         (loop [result (async/<!! results-ch)]
+          (timbre/trace log-prefix "New query result" result)
           (cond
-            (nil? result) (async/close! read-ch)
-            (instance? Throwable result) (async/>!! read-ch (ex-info "Uncaught exception in rethinkdb input query" {:exception result}))
+            (nil? result) (do (timbre/debug log-prefix "Query result channel closed, stopping read loop")
+                              (async/close! read-ch))
+            (instance? Throwable result) (do (timbre/debug log-prefix "Query result channel returned a throwable" result)
+                                             (async/>!! read-ch (ex-info "uncaught exception in rethinkdb input query" {:exception result})))
             (or (sequential? result)
                 (instance? Cursor result)) (if-let [v (first result)]
                                              (when (async/>!! read-ch v)
@@ -48,8 +51,7 @@
 (defn- all-done? [messages]
   (empty? (remove done? messages)))
 
-(defrecord RethinkDbReader [task-id log read-ch
-                            pending-messages drained? acked-result
+(defrecord RethinkDbReader [read-ch pending-messages drained?
                             max-pending batch-size batch-timeout]
   pipeline/Pipeline
   (write-batch
@@ -57,20 +59,21 @@
     (function/write-batch event))
 
   (read-batch
-    [_ _]
+    [_ {:keys [onyx.core/log-prefix]}]
     (let [pending      (count @pending-messages)
           max-segments (min (- max-pending pending) batch-size)
           timeout-ch   (async/timeout batch-timeout)
           batch        (->> (range max-segments)
                             (keep (fn [_] (first (async/alts!! [read-ch timeout-ch] :priority true)))))]
-      (doseq [m batch]
-        (swap! pending-messages assoc (:id m) m))
+      (swap! pending-messages into (map (juxt :id identity)) batch)
       (let [new-pending (vals @pending-messages)]
         (when (and (all-done? new-pending)
                    (all-done? batch)
                    (or (not (empty? new-pending))
                        (not (empty? batch))))
+          (timbre/debug log-prefix "Input is drained")
           (reset! drained? true)))
+      (timbre/tracef log-prefix "Producing batch of %s new messages" (count batch))
       {:onyx.core/batch batch}))
 
   pipeline/PipelineInput
@@ -78,8 +81,9 @@
     (swap! pending-messages dissoc message-id))
 
   (retry-segment
-    [_ _ message-id]
+    [_ {:keys [onyx.core/log-prefix]} message-id]
     (when-let [msg (get @pending-messages message-id)]
+      (timbre/trace log-prefix "Retrying message with id" message-id)
       (swap! pending-messages dissoc message-id)
       (async/>!! read-ch msg)))
 
@@ -92,32 +96,27 @@
     @drained?))
 
 (defn inject-reader
-  [{:keys [onyx.core/task-map onyx.core/pipeline]} _]
+  [{:keys [onyx.core/task-map onyx.core/pipeline onyx.core/log-prefix]} _]
   {:pre [(= 1 (:onyx/max-peers task-map))
          (:rethinkdb/query task-map)]}
   (let [host    (:rethinkdb/host task-map "localhost")
         port    (:rethinkdb/port task-map 28015)
         query   (:rethinkdb/query task-map)
         read-ch (:read-ch pipeline)]
-    (start-read-loop! host port query read-ch)
-    (timbre/spy :debug "Injecting read channel"
-                {:rethinkdb/read-ch read-ch})))
+    (start-read-loop! log-prefix host port query read-ch)
+    (timbre/debugf log-prefix "Injecting rethinkdb reader for %s:%s" host port)
+    {:rethinkdb/read-ch read-ch}))
 
-(defn input [{:keys [onyx.core/log
-                     onyx.core/task-id
-                     onyx.core/task-map]}]
+(defn input [{:keys [onyx.core/task-map]}]
   (let [max-pending      (defaults/arg-or-default :onyx/max-pending task-map)
         batch-size       (defaults/arg-or-default :onyx/batch-size task-map)
         batch-timeout    (defaults/arg-or-default :onyx/batch-timeout task-map)
         read-buffer      (:rethinkdb/read-buffer task-map 1000)
         pending-messages (atom {})
         drained?         (atom false)
-        acked-result     (atom nil)
         read-ch          (async/chan read-buffer transform-query-result)]
     (->RethinkDbReader
-      task-id log read-ch
-      pending-messages drained? acked-result
-      max-pending batch-size batch-timeout)))
+      read-ch pending-messages drained? max-pending batch-size batch-timeout)))
 
 (def reader-calls
   {:lifecycle/before-task-start inject-reader})
@@ -151,9 +150,10 @@
 (defn output [_]
   (->RethinkDbWriter))
 
-(defn inject-writer [{:keys [onyx.core/task-map]} _]
+(defn inject-writer [{:keys [onyx.core/task-map onyx.core/log-prefix]} _]
   (let [host (:rethinkdb/host task-map "localhost")
         port (:rethinkdb/port task-map 28015)]
+    (timbre/debugf log-prefix "Injecting rethinkdb writer for %s:%s" host port)
     {:rethinkdb/connection (r/connect :host host :port port)}))
 
 (def writer-calls
