@@ -1,4 +1,4 @@
-(defproject dignati/onyx-rethinkdb "0.9.6.1"
+(defproject dignati/onyx-rethinkdb "0.9.6.2-SNAPSHOT"
   :description "Onyx plugin for rethinkdb"
   :url "https://github.com/dignati/onyx-rethinkdb"
   :license {:name "Eclipse Public License"
