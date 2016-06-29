@@ -8,8 +8,7 @@
             [rethinkdb.query :as r]
             [taoensso.timbre :as timbre])
   (:import [java.util UUID]
-           [rethinkdb.net Cursor]
-           [onyx.types Leaf]))
+           [rethinkdb.net Cursor]))
 
 ;;; Reader
 
@@ -21,37 +20,27 @@
           (timbre/trace log-prefix "New query result" result)
           (cond
             (nil? result) (do (timbre/debug log-prefix "Query result channel closed, stopping read loop")
-                              (async/close! read-ch))
+                              (async/>!! read-ch (types/input (UUID/randomUUID) :done)))
             (instance? Throwable result) (do (timbre/debug log-prefix "Query result channel returned a throwable" result)
-                                             (async/>!! read-ch (ex-info "uncaught exception in rethinkdb input query" {:exception result})))
+                                             (async/>!! read-ch
+                                                        (types/input (UUID/randomUUID)
+                                                                     (ex-info "uncaught exception in rethinkdb input query" {:exception result}))))
             (or (sequential? result)
                 (instance? Cursor result)) (if-let [v (first result)]
-                                             (when (async/>!! read-ch v)
+                                             (when (async/>!! read-ch (types/input (UUID/randomUUID) v))
                                                (recur (rest result)))
-                                             (async/close! read-ch))
-            :else (when (async/>!! read-ch result)
+                                             (do
+                                               (async/>!! read-ch (types/input (UUID/randomUUID) :done))))
+            :else (when (async/>!! read-ch (types/input (UUID/randomUUID) result))
                     (recur (async/<!! results-ch)))))))))
-
-(def transform-query-result
-  (fn [rf]
-    (fn
-      ([]
-       (rf))
-      ([res]
-       (rf (rf res (types/input (UUID/randomUUID) :done))))
-      ([res in]
-       (rf res
-           (if (instance? Leaf in)
-             (assoc in :id (UUID/randomUUID))
-             (types/input (UUID/randomUUID) in)))))))
 
 (defn- done? [message]
   (= :done (:message message)))
 
 (defn- all-done? [messages]
-  (empty? (remove done? messages)))
+  (every? done? messages))
 
-(defrecord RethinkDbReader [read-ch pending-messages drained?
+(defrecord RethinkDbReader [read-ch retry-ch pending-messages drained?
                             max-pending batch-size batch-timeout]
   pipeline/Pipeline
   (write-batch
@@ -63,17 +52,19 @@
     (let [pending      (count @pending-messages)
           max-segments (min (- max-pending pending) batch-size)
           timeout-ch   (async/timeout batch-timeout)
-          batch        (->> (range max-segments)
-                            (keep (fn [_] (first (async/alts!! [read-ch timeout-ch] :priority true)))))]
-      (swap! pending-messages into (map (juxt :id identity)) batch)
-      (let [new-pending (vals @pending-messages)]
+          batch        (into [] (comp (keep (fn [_] (first (async/alts!! [retry-ch read-ch timeout-ch] :priority true))))
+                                      (map (fn [msg] (if (done? msg)
+                                                       (types/input (UUID/randomUUID) :done)
+                                                       msg))))
+                             (range max-segments))]
+      (let [new-pending (vals (swap! pending-messages into (map (juxt :id identity)) batch))]
         (when (and (all-done? new-pending)
                    (all-done? batch)
                    (or (not (empty? new-pending))
                        (not (empty? batch))))
           (timbre/debug log-prefix "Input is drained")
           (reset! drained? true)))
-      (timbre/tracef log-prefix "Producing batch of %s new messages" (count batch))
+      (timbre/debugf "%s Producing batch of %s new messages" log-prefix (count batch))
       {:onyx.core/batch batch}))
 
   pipeline/PipelineInput
@@ -81,11 +72,10 @@
     (swap! pending-messages dissoc message-id))
 
   (retry-segment
-    [_ {:keys [onyx.core/log-prefix]} message-id]
+    [_ _ message-id]
     (when-let [msg (get @pending-messages message-id)]
-      (timbre/trace log-prefix "Retrying message with id" message-id)
-      (swap! pending-messages dissoc message-id)
-      (async/>!! read-ch msg)))
+      (async/>!! retry-ch (types/input (UUID/randomUUID) (:message msg)))
+      (swap! pending-messages dissoc message-id)))
 
   (pending?
     [_ _ message-id]
@@ -99,13 +89,15 @@
   [{:keys [onyx.core/task-map onyx.core/pipeline onyx.core/log-prefix]} _]
   {:pre [(= 1 (:onyx/max-peers task-map))
          (:rethinkdb/query task-map)]}
-  (let [host    (:rethinkdb/host task-map "localhost")
-        port    (:rethinkdb/port task-map 28015)
-        query   (:rethinkdb/query task-map)
-        read-ch (:read-ch pipeline)]
+  (let [host     (:rethinkdb/host task-map "localhost")
+        port     (:rethinkdb/port task-map 28015)
+        query    (:rethinkdb/query task-map)
+        read-ch  (:read-ch pipeline)
+        retry-ch (:retry-ch pipeline)]
     (start-read-loop! log-prefix host port query read-ch)
-    (timbre/debugf log-prefix "Injecting rethinkdb reader for %s:%s" host port)
-    {:rethinkdb/read-ch read-ch}))
+    (timbre/debugf "%s Injecting rethinkdb reader for %s:%s" log-prefix host port)
+    {:rethinkdb/read-ch  read-ch
+     :rethinkdb/retry-ch retry-ch}))
 
 (defn input [{:keys [onyx.core/task-map]}]
   (let [max-pending      (defaults/arg-or-default :onyx/max-pending task-map)
@@ -114,9 +106,10 @@
         read-buffer      (:rethinkdb/read-buffer task-map 1000)
         pending-messages (atom {})
         drained?         (atom false)
-        read-ch          (async/chan read-buffer transform-query-result)]
+        read-ch          (async/chan read-buffer)
+        retry-ch         (async/chan (* 2 max-pending))]
     (->RethinkDbReader
-      read-ch pending-messages drained? max-pending batch-size batch-timeout)))
+      read-ch retry-ch pending-messages drained? max-pending batch-size batch-timeout)))
 
 (def reader-calls
   {:lifecycle/before-task-start inject-reader})
@@ -130,13 +123,17 @@
     (function/read-batch event))
 
   (write-batch
-    [_ {:keys [onyx.core/results rethinkdb/connection]}]
+    [_ {:keys [onyx.core/results rethinkdb/connection onyx.core/log-prefix]}]
     (transduce
       (comp (mapcat :leaves)
             (map :message))
       (completing
         (fn [_ q]
           (let [res (r/run q connection)]
+            (when (and (:inserted res)
+                       (pos? (:errors res)))
+              (timbre/warnf "%s Write query returned %s errors, first error was %s"
+                            log-prefix (:errors res) (:first_error res)))
             (when (instance? Throwable res)
               (throw (ex-info "Uncaught exception in rethinkdb output query" {:exception res}))))))
       nil
@@ -153,7 +150,7 @@
 (defn inject-writer [{:keys [onyx.core/task-map onyx.core/log-prefix]} _]
   (let [host (:rethinkdb/host task-map "localhost")
         port (:rethinkdb/port task-map 28015)]
-    (timbre/debugf log-prefix "Injecting rethinkdb writer for %s:%s" host port)
+    (timbre/debugf "%s Injecting rethinkdb writer for %s:%s" log-prefix host port)
     {:rethinkdb/connection (r/connect :host host :port port)}))
 
 (def writer-calls

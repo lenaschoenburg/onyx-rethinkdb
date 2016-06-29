@@ -100,11 +100,15 @@
                       :load-documents
                       {:onyx/batch-size       30
                        :rethinkdb/read-buffer 1000
+                       :rethinkdb/host        test-host
+                       :rethinkdb/port        test-port
                        :rethinkdb/query       (-> (r/db test-db)
                                                   (r/table "test_in" {"read-mode" "majority"}))}))
       (job/add-task (rethinkdb/output
                       :save-documents
-                      {:onyx/batch-size 30
+                      {:onyx/batch-size 20
+                       :rethinkdb/host  test-host
+                       :rethinkdb/port  test-port
                        :onyx/fn         ::write-query}))))
 
 (defn submit-and-wait
