@@ -62,8 +62,6 @@
                        (not (empty? batch))))
           (timbre/debug log-prefix "Input is drained")
           (reset! drained? true)))
-      (when (pos? (count batch))
-        (timbre/debugf "%s Producing batch of %s new segments" log-prefix (count batch)))
       {:onyx.core/batch batch}))
 
   pipeline/PipelineInput
@@ -147,8 +145,7 @@
           (let [res (r/run q connection)]
             (when (and (:inserted res)
                        (pos? (:errors res)))
-              (timbre/warnf "%s Write query returned %s errors, first error was %s"
-                            log-prefix (:errors res) (:first_error res)))
+              (timbre/warnf "%s Write query returned %s errors" log-prefix (:errors res)))
             (when (instance? Throwable res)
               (throw (ex-info "Uncaught exception in rethinkdb output query" {:exception res}))))))
       nil
