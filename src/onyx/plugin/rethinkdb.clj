@@ -14,29 +14,53 @@
 
 (defn put-result! [log-prefix read-ch result]
   (if (instance? Throwable result)
-    (do (timbre/debug log-prefix "Query result channel returned a throwable" result)
+    (do (timbre/warn log-prefix "Query result channel returned a throwable" result)
         (async/>!! read-ch
                    (types/input (UUID/randomUUID)
                                 (ex-info "Uncaught exception in rethinkdb input query" {:exception result}))))
     (async/>!! read-ch (types/input (UUID/randomUUID) result))))
 
-(defn- start-read-loop! [{:keys [rethinkdb/host rethinkdb/port rethinkdb/query]} log-prefix read-ch]
+(defn- start-read-loop! [{:keys [rethinkdb/host rethinkdb/port rethinkdb/query rethinkdb/reset-interval]}
+                         log-prefix read-ch stop-ch]
   (async/thread
-    (let [conn      (r/connect :host host :port port)
-          result-ch (r/run query conn {:async? true})]
-      (loop [result (async/<!! result-ch)]
-        (cond
-          (nil? result)
-          (async/>!! read-ch (types/input (UUID/randomUUID) :done))
+    (loop []
+      (let [conn      (r/connect :host host :port port)
+            result-ch (r/run query conn {:async? true})
+            reset-ch  (if reset-interval
+                        (async/timeout reset-interval)
+                        (async/chan))
+            chs       [stop-ch reset-ch result-ch]
+            next-op   (loop [[result ch] (async/alts!! chs :priority true)]
+                        (cond
+                          (= ch stop-ch)
+                          ::stop
 
-          (sequential? result)
-          (when (every? (partial put-result! log-prefix read-ch) result)
-            (recur (async/<!! result-ch)))
+                          (= ch reset-ch)
+                          ::reset
 
-          :else
-          (do (put-result! log-prefix read-ch result)
-              (recur (async/<!! result-ch)))))
-      (.close conn))))
+                          (nil? result)
+                          (if reset-interval
+                            ::reset
+                            (do (async/>!! read-ch (types/input (UUID/randomUUID) :done))
+                                ::stop))
+
+                          (sequential? result)
+                          (if (every? (partial put-result! log-prefix read-ch) result)
+                            (recur (async/alts!! chs :priority true))
+                            (if reset-interval
+                              ::reset ::stop))
+
+                          :else
+                          (if (put-result! log-prefix read-ch result)
+                            (recur (async/alts!! chs :priority true))
+                            (if reset-interval
+                              ::reset ::stop))))]
+        (timbre/debugf "%s Closing connection to %s:%s" log-prefix host port)
+        (.close conn)
+        (timbre/debugf "%s Closed connection to %s:%s" log-prefix host port)
+        (when (= ::reset next-op)
+          (timbre/debugf "%s Reconnecting to %s:%s" log-prefix host port)
+          (recur))))))
 
 (defn- done? [message]
   (= :done (:message message)))
@@ -44,7 +68,7 @@
 (defn- all-done? [messages]
   (every? done? messages))
 
-(defrecord RethinkDbReader [stop-signal-ch read-ch retry-ch pending-messages drained?
+(defrecord RethinkDbReader [stop-ch read-ch retry-ch pending-messages drained?
                             max-pending batch-size batch-timeout]
   pipeline/Pipeline
   (write-batch
@@ -95,13 +119,15 @@
   (let [host     (:rethinkdb/host task-map "localhost")
         port     (:rethinkdb/port task-map 28015)
         read-ch  (:read-ch pipeline)
-        retry-ch (:retry-ch pipeline)]
-    (start-read-loop! task-map log-prefix read-ch)
+        retry-ch (:retry-ch pipeline)
+        stop-ch  (:stop-ch pipeline)]
+    (start-read-loop! task-map log-prefix read-ch stop-ch)
     (timbre/debugf "%s Injecting rethinkdb reader for %s:%s" log-prefix host port)
     {:rethinkdb/read-ch  read-ch
-     :rethinkdb/retry-ch retry-ch}))
+     :rethinkdb/retry-ch retry-ch
+     :rethinkdb/stop-ch  stop-ch}))
 
-(defn stop-reader [{:keys [rethinkdb/read-ch rethinkdb/retry-ch onyx.core/log-prefix]} _]
+(defn stop-reader [{:keys [rethinkdb/read-ch rethinkdb/retry-ch rethinkdb/stop-ch onyx.core/log-prefix]} _]
   (timbre/debug log-prefix "Closing read channel")
   (async/close! read-ch)
   (timbre/debug log-prefix "Closing retry channel")
@@ -109,7 +135,11 @@
   (while (async/poll! read-ch))
   (timbre/debug log-prefix "Closed read channel")
   (while (async/poll! retry-ch))
-  (timbre/debug log-prefix "Closed retry channel"))
+  (timbre/debug log-prefix "Closed retry channel")
+  (timbre/debug log-prefix "Stopping read loop")
+  (async/close! stop-ch)
+  (timbre/debug log-prefix "Stopped read loop"))
+
 
 (defn input [{:keys [onyx.core/task-map]}]
   (let [max-pending      (defaults/arg-or-default :onyx/max-pending task-map)
@@ -120,9 +150,9 @@
         drained?         (atom false)
         read-ch          (async/chan read-buffer)
         retry-ch         (async/chan (* 2 max-pending))
-        stop-signal-ch   (async/chan)]
+        stop-ch          (async/chan)]
     (->RethinkDbReader
-      stop-signal-ch read-ch retry-ch pending-messages drained? max-pending batch-size batch-timeout)))
+      stop-ch read-ch retry-ch pending-messages drained? max-pending batch-size batch-timeout)))
 
 (def reader-calls
   {:lifecycle/before-task-start inject-reader
@@ -146,9 +176,9 @@
           (let [res (r/run q connection)]
             (when (and (:inserted res)
                        (pos? (:errors res)))
-              (timbre/warnf "%s Write query returned %s errors" log-prefix (:errors res)))
+              (timbre/warnf "%s Query returned %s errors" log-prefix (:errors res)))
             (when (instance? Throwable res)
-              (throw (ex-info "Uncaught exception in rethinkdb output query" {:exception res}))))))
+              (throw (ex-info "Uncaught exception in query" {:exception res}))))))
       nil
       (:tree results))
     {})
@@ -163,13 +193,13 @@
 (defn inject-writer [{:keys [onyx.core/task-map onyx.core/log-prefix]} _]
   (let [host (:rethinkdb/host task-map "localhost")
         port (:rethinkdb/port task-map 28015)]
-    (timbre/debugf "%s Injecting rethinkdb writer for %s:%s" log-prefix host port)
+    (timbre/debugf "%s Injecting writer for %s:%s" log-prefix host port)
     {:rethinkdb/connection (r/connect :host host :port port)}))
 
 (defn stop-writer [{:keys [rethinkdb/connection onyx.core/log-prefix]} _]
-  (timbre/debug log-prefix "Closing rethinkdb connection")
+  (timbre/debug log-prefix "Closing connection")
   (.close ^Connection connection)
-  (timbre/debug log-prefix "Closed rethinkdb connection"))
+  (timbre/debug log-prefix "Closed connection"))
 
 
 

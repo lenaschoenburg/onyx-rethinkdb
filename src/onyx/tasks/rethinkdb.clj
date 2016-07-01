@@ -6,11 +6,12 @@
   (s/constrained s/Int #(<= 1 % 65535)))
 
 (s/defschema RethinkDbTaskConfig
-  {(s/optional-key :rethinkdb/host)        s/Str
-   (s/optional-key :rethinkdb/port)        Port
-   (s/optional-key :rethinkdb/db)          s/Str
-   (s/optional-key :rethinkdb/read-buffer) s/Int
-   (os/restricted-ns :rethinkdb)           s/Any})
+  {(s/optional-key :rethinkdb/host)           s/Str
+   (s/optional-key :rethinkdb/port)           Port
+   (s/optional-key :rethinkdb/db)             s/Str
+   (s/optional-key :rethinkdb/read-buffer)    s/Int
+   (s/optional-key :rethinkdb/reset-interval) s/Int
+   (os/restricted-ns :rethinkdb)              s/Any})
 
 (s/defschema RethinkDbInputTaskMap
   (assoc RethinkDbTaskConfig
