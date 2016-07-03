@@ -20,11 +20,11 @@
                                 (ex-info "Uncaught exception in rethinkdb input query" {:exception result}))))
     (async/>!! read-ch (types/input (UUID/randomUUID) result))))
 
-(defn- start-read-loop! [{:keys [rethinkdb/host rethinkdb/port rethinkdb/query rethinkdb/reset-interval]}
+(defn- start-read-loop! [{:keys [rethinkdb/host rethinkdb/port rethinkdb/db rethinkdb/query rethinkdb/reset-interval]}
                          log-prefix read-ch stop-ch]
   (async/thread
     (loop []
-      (let [conn      (r/connect :host host :port port)
+      (let [conn      (r/connect :host host :port port :db db)
             result-ch (r/run query conn {:async? true})
             reset-ch  (if reset-interval
                         (async/timeout reset-interval)
@@ -192,16 +192,15 @@
 
 (defn inject-writer [{:keys [onyx.core/task-map onyx.core/log-prefix]} _]
   (let [host (:rethinkdb/host task-map "localhost")
-        port (:rethinkdb/port task-map 28015)]
+        port (:rethinkdb/port task-map 28015)
+        db   (:rethinkdb/db   task-map)]
     (timbre/debugf "%s Injecting writer for %s:%s" log-prefix host port)
-    {:rethinkdb/connection (r/connect :host host :port port)}))
+    {:rethinkdb/connection (r/connect :host host :port port :db db)}))
 
 (defn stop-writer [{:keys [rethinkdb/connection onyx.core/log-prefix]} _]
   (timbre/debug log-prefix "Closing connection")
   (.close ^Connection connection)
   (timbre/debug log-prefix "Closed connection"))
-
-
 
 (def writer-calls
   {:lifecycle/before-task-start inject-writer
