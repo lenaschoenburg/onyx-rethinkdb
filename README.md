@@ -137,3 +137,12 @@ Then, add the input function to a base job:
 |`:rethinkdb/host`           | `string`  | `"localhost"` | RethinkDB server host
 |`:rethinkdb/port`           | `number`  | `28015`       | RethinkDB server port.
 |`:rethinkdb/db`             | `string`  |               | Standard database for queries. The database can also be set inside the query.
+
+
+# License
+
+Copyright © 2016 Ole Krüger
+
+Distributed under the Eclipse Public License, the same as Clojure.
+
+[clj-rethinkdb](https://github.com/apa512/clj-rethinkdb)
