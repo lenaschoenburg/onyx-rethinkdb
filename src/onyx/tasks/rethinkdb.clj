@@ -9,12 +9,12 @@
   {(s/optional-key :rethinkdb/host)           s/Str
    (s/optional-key :rethinkdb/port)           Port
    (s/optional-key :rethinkdb/db)             s/Str
-   (s/optional-key :rethinkdb/read-buffer)    s/Int
-   (s/optional-key :rethinkdb/reset-interval) s/Int
    (os/restricted-ns :rethinkdb)              s/Any})
 
 (s/defschema RethinkDbInputTaskMap
   (assoc RethinkDbTaskConfig
+    (s/optional-key :rethinkdb/read-buffer)    s/Int
+    (s/optional-key :rethinkdb/reset-interval) s/Int
     :rethinkdb/query {s/Any s/Any}))
 
 (s/defschema RethinkDbOutputTaskMap
