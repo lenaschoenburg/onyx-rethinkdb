@@ -9,7 +9,7 @@ The final digit increments when there are changes to the plugin within an Onyx r
 In your project file:
 
 ```
-[dignati/onyx-rethinkdb "0.9.6.3-SNAPSHOT"]
+[dignati/onyx-rethinkdb "0.9.6.3"]
 ```
 
 In your peer boot-up namespace:
@@ -115,7 +115,7 @@ Require the namespace for the [clj-rethinkdb](https://github.com/apa512/clj-reth
 
 ### Task bundle
 
-Again, you can save ypur time by using the task bundle:
+Again, you can save your time by using the task bundle:
 
 Require the helpers and rethinkdb:
 
