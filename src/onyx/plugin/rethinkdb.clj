@@ -8,7 +8,8 @@
             [rethinkdb.query :as r]
             [taoensso.timbre :as timbre])
   (:import [java.util UUID]
-           [rethinkdb.core Connection]))
+           [rethinkdb.core Connection]
+           [clojure.core.async.impl.channels ManyToManyChannel]))
 
 ;;; Reader
 
@@ -88,6 +89,8 @@
       (let [new-pending (vals (swap! pending-messages into (map (juxt :id identity)) batch))]
         (when (and (all-done? new-pending)
                    (all-done? batch)
+                   (zero? (count (.buf ^ManyToManyChannel read-ch)))
+                   (zero? (count (.buf ^ManyToManyChannel retry-ch)))
                    (or (not (empty? new-pending))
                        (not (empty? batch))))
           (timbre/debug log-prefix "Input is drained")
