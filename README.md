@@ -9,7 +9,7 @@ The final digit increments when there are changes to the plugin within an Onyx r
 In your project file:
 
 ```
-[dignati/onyx-rethinkdb "0.9.6.2"]
+[dignati/onyx-rethinkdb "0.9.6.3-SNAPSHOT"]
 ```
 
 In your peer boot-up namespace:
