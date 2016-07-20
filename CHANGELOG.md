@@ -1,3 +1,7 @@
+## 0.9.9.0 20-07-2016
+
+* Update to `org.onyxplatform/onyx 0.9.9`
+
 ## 0.9.7.0 05-07-2016
 
 * Update to `org.onyxplatform/onyx 0.9.7`
